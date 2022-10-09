@@ -1,0 +1,4 @@
+-Wall
+-Wextra
+-pedantic
+-I./src
