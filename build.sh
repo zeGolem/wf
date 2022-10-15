@@ -3,7 +3,7 @@
 set -ex;
 
 CC=${CC:-clang}
-CFLAGS="$CFLAGS -std=c2x"
+CFLAGS="$CFLAGS -std=c11"
 DEBUGGER=${DEBUGGER:-lldb}
 STRIP=${STRIP:-llvm-strip}
 
