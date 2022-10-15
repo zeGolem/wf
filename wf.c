@@ -127,32 +127,59 @@ struct watched_file** watch_files(int inotify_fd, struct program_args* args)
 	return files;
 }
 
-int run_shell_command_from_args(char**   command_args,
-                                unsigned command_args_count)
+int run_command(char**               command_args,
+                unsigned             command_args_count,
+                struct watched_file* file)
 {
+	// TODO: Can `command`'s size be figured out in a smarter way?
 	char* command = malloc(command_args_count * MAX_COMMAND_ARG_LENGTH);
 	memset(command, 0, command_args_count * MAX_COMMAND_ARG_LENGTH);
 
 	unsigned position_in_command = 0;
 
+	// For each command arguement
 	for (unsigned i = 0; i < command_args_count; ++i) {
-		char* current_command     = command_args[i];
-		int   current_command_len = strlen(current_command);
+		char* current_command = command_args[i];
 
 		command[position_in_command++] = '"';
 
-		// Copy `current_command_len` bytes from `current_command` to
-		// `position_in_command` bytes into `command`,
-		void* ret = memcpy(command + position_in_command,
-		                   current_command,
-		                   current_command_len);
+		// For each character `*c` in the current command
+		for (char* c = current_command; *c; ++c) {
+			if (*c != '%') {
+				command[position_in_command++] = *c;
+				continue;
+			}
 
-		if (!ret) {
-			perror("wf: memcpy");
-			exit(errno);
+			// Here, the current character is '%'. We need to replace it
+			// probably.
+
+			// Check the next character
+			char next_character = *(c + 1);
+			switch (next_character) {
+
+			case 'F': {
+				// Substitute with the file name
+				strcpy(&command[position_in_command], file->filename);
+				position_in_command += strlen(file->filename);
+			} break;
+
+			case '%': {
+				// Put a '%'
+				command[position_in_command++] = '%';
+			} break;
+
+			default: {
+				// Not a valid character
+				fprintf(
+				    stderr, "Invalid format character '%c'", next_character);
+				command[position_in_command++] = *c;
+				continue;
+			} break;
+			}
+
+			// Skip the next character, since we already handled it.
+			++c;
 		}
-
-		position_in_command += current_command_len;
 
 		command[position_in_command++] = '"';
 		command[position_in_command++] = ' ';
@@ -194,10 +221,17 @@ int main(int argc, char** argv)
 			continue;
 		}
 
-		if (event.mask & IN_MODIFY) {
-			printf("File %d was updated\n", event.wd);
-			run_shell_command_from_args(args->command_args,
-			                            args->command_args_count);
+		if (event.mask & IN_MODIFY) { // If a file was modified
+			// For each watched file
+			for (size_t i = 0; i < args->file_count; ++i) {
+				// If the file isn't the one that was modified, skip it
+				if (event.wd != watched_files[i]->inotify_wd) continue;
+
+				// Run the shell command for the file that was updated
+				run_command(args->command_args,
+				            args->command_args_count,
+				            watched_files[i]);
+			}
 		}
 	}
 }
