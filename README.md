@@ -56,7 +56,7 @@ wf [FILE1] <FILE2> <FILE3> <...> -- [COMMAND TO RUN]
 For example:
 
 ```
-wf test -- echo test was updated!"
+wf test -- echo test was updated!
 ```
 
 will print "test was updated" whenever the file "test" gets
