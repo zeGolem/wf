@@ -65,22 +65,8 @@ struct program_args* parse_args(int argc, char** argv)
 			// Normal file name "parsing"
 			args->filenames[args->file_count++] = argv[i];
 
-		} else { // Parsing a command arg
-			unsigned long current_len = strlen(argv[i]);
-
-			// We want to surround the arguement in '"'s to avoid issues with
-			// spaces
-
-			// Prepare a memory location to store the new string
-			int new_arg_size =
-			    current_len + 2 + 1; // +2 for the quotes, +1 for the \0
-			char* new_arg = malloc(new_arg_size);
-
-			snprintf(new_arg, new_arg_size, "\"%s\"", argv[i]);
-
-			// Put the new string into the array
-			args->command_args[args->command_args_count++] = new_arg;
-		}
+		} else // Parsing a command arg
+			args->command_args[args->command_args_count++] = argv[i];
 	}
 
 	// Realloc the arrays to their appropriate size to save memory
@@ -127,67 +113,165 @@ struct watched_file** watch_files(int inotify_fd, struct program_args* args)
 	return files;
 }
 
-int run_command(char**               command_args,
-                unsigned             command_args_count,
-                struct watched_file* file)
+void run_command(char**               command_args,
+                 unsigned             command_args_count,
+                 struct watched_file* file)
 {
-	// TODO: Can `command`'s size be figured out in a smarter way?
-	char* command = malloc(command_args_count * MAX_COMMAND_ARG_LENGTH);
-	memset(command, 0, command_args_count * MAX_COMMAND_ARG_LENGTH);
+	// Add one to the args count, as we need to add a NULL to signal the end of
+	// the array
+	char** final_command_args =
+	    malloc((command_args_count + 1) * sizeof(char*));
+	if (!final_command_args) {
+		perror("wf: malloc");
+		exit(-errno);
+	}
 
-	unsigned position_in_command = 0;
+	memset(final_command_args, 0, command_args_count * sizeof(char*));
 
 	// For each command arguement
 	for (unsigned i = 0; i < command_args_count; ++i) {
-		char* current_command = command_args[i];
+		char* current_arg = command_args[i];
 
-		command[position_in_command++] = '"';
+		// If the current arg doesn't contain a '%'
+		if (strchr(current_arg, '%') == 0) {
+			// Just store the arguement as is, no need to do any substitutions
+			final_command_args[i] = current_arg;
 
-		// For each character `*c` in the current command
-		for (char* c = current_command; *c; ++c) {
-			if (*c != '%') {
-				command[position_in_command++] = *c;
-				continue;
+		} else { // Parse the '%' substitutions
+			unsigned new_arg_capacity = 512;
+			char*    new_arg          = malloc(new_arg_capacity * sizeof(char));
+			if (!new_arg) {
+				perror("wf: malloc");
+				exit(-errno);
 			}
 
-			// Here, the current character is '%'. We need to replace it
-			// probably.
+			memset(new_arg, 0, new_arg_capacity * sizeof(char));
 
-			// Check the next character
-			char next_character = *(c + 1);
-			switch (next_character) {
+			// Current position in the `new_arg` array
+			unsigned new_arg_pos = 0;
 
-			case 'F': {
-				// Substitute with the file name
-				strcpy(&command[position_in_command], file->filename);
-				position_in_command += strlen(file->filename);
-			} break;
+			// For each `c` in `current_arg`
+			for (char* c = current_arg; *c; ++c) {
+				if (*c != '%') {
+					// Check we have enough space to add one character to
+					// new_arg
+					if (new_arg_pos + 1 >= new_arg_capacity) {
+						// If we don't, increase the capacity and realloc
+						// new_arg
+						new_arg_capacity += 512;
+						new_arg = realloc(new_arg, new_arg_capacity);
+						if (!new_arg) {
+							perror("wf: realloc");
+							exit(-errno);
+						}
+					}
 
-			case '%': {
-				// Put a '%'
-				command[position_in_command++] = '%';
-			} break;
+					// We know we have enough space, we can copy the current
+					// character to the new_arg
+					new_arg[new_arg_pos++] = *c;
 
-			default: {
-				// Not a valid character
-				fprintf(
-				    stderr, "Invalid format character '%c'", next_character);
-				command[position_in_command++] = *c;
-				continue;
-			} break;
+					continue;
+				}
+
+				// We know `c` is a '%' here!
+
+				// Go forward one character and check its value
+				// This will make `c` the character following the '%', we can
+				// choose which substitution to do
+				switch (*(++c)) {
+				case '%': { // "%%" will be interpreted as "%" in the new_arg
+					// Check we have enough space to add one character to
+					// new_arg
+					if (new_arg_pos + 1 >= new_arg_capacity) {
+						// If we don't, increase the capacity and realloc
+						// new_arg
+						new_arg_capacity += 512;
+						new_arg = realloc(new_arg, new_arg_capacity);
+						if (!new_arg) {
+							perror("wf: realloc");
+							exit(-errno);
+						}
+					}
+
+					// We know we have enough space, we can add the '%' to the
+					// `new_arg`.
+					new_arg[new_arg_pos] = *c;
+				} break;
+
+				case 'F': { // "%F" will be replaced by the file's name
+					unsigned filename_length = strlen(file->filename);
+
+					// Check we have enough space to add the filename to
+					// new_arg
+					if (new_arg_pos + filename_length >= new_arg_capacity) {
+						// If we don't, increase the capacity and realloc
+						// new_arg
+						new_arg_capacity += 512;
+						new_arg = realloc(new_arg, new_arg_capacity);
+						if (!new_arg) {
+							perror("wf: realloc");
+							exit(-errno);
+						}
+					}
+
+					// Copy `filename_length` characters from the file's name to
+					// the new arg, at the current position
+					if (!memcpy(&new_arg[new_arg_pos],
+					            file->filename,
+					            filename_length)) {
+						// If memcpy failed
+						perror("wf: memcpy");
+						exit(-errno);
+					}
+
+					new_arg_pos += filename_length;
+
+				} break;
+
+				default: {
+					fprintf(
+					    stderr, "Unknown substitution: %%%c, skipping\n", *c);
+				} break;
+				}
 			}
 
-			// Skip the next character, since we already handled it.
-			++c;
+			// Resize the string to the right size
+			// Add one to the pos because of the final NULL byte
+			new_arg = realloc(new_arg, new_arg_pos + 1);
+
+			if (!new_arg) { // TODO: Can we ignore this error? The string is
+				            // already ready, so we could just reuse the
+				            // previously allocated memory...
+				perror("wf: realloc");
+				exit(-errno);
+			}
+
+			final_command_args[i] = new_arg;
 		}
-
-		command[position_in_command++] = '"';
-		command[position_in_command++] = ' ';
-
-		// TODO: Check we don't excede the allocated size of `command`
 	}
 
-	return system(command);
+	// Add a final NULL pointer at the end of the arguements array, to signal
+	// the end
+	final_command_args[command_args_count] = 0;
+
+	// We have all arguements ready, it's time to fork to spawn a child
+
+	pid_t current_pid = fork();
+
+	if (current_pid < 0) {
+		perror("wf: fork");
+		exit(-errno);
+	}
+
+	if (current_pid == 0) {
+		// In the child process
+
+		// Spawn the desired command
+		execvp(final_command_args[0], final_command_args);
+	}
+
+	// In the parrent, just return
+	return;
 }
 
 int main(int argc, char** argv)
